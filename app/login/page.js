@@ -45,7 +45,7 @@ export default function LoginPage() {
       <Navbar />
       <div className="page">
         <div className="card" style={{ maxWidth: 420, margin: "0 auto" }}>
-          <h1>Staff Login</h1>
+          <h1>Login</h1>
           {error && <p className="error">{error}</p>}
           <form onSubmit={handleSubmit}>
             <label>Email</label>
