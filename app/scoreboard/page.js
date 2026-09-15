@@ -1,252 +1,172 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  collection,
-  onSnapshot,
-  doc,
-  setDoc,
-  serverTimestamp,
-} from "firebase/firestore";
+import { collection, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { useAuth } from "@/context/AuthContext";
-import { bracketOf } from "@/lib/levels";
+import { BRACKETS, bracketOf } from "@/lib/levels";
 import Navbar from "@/components/Navbar";
-import ProtectedRoute from "@/components/ProtectedRoute";
 
-function ScorerForm() {
-  const { user, role, assignedEvents } = useAuth();
-  const [events, setEvents] = useState([]);
+function average(nums) {
+  if (nums.length === 0) return 0;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+export default function ScoreboardPage() {
   const [teams, setTeams] = useState([]);
+  const [events, setEvents] = useState([]);
   const [scores, setScores] = useState([]);
-
-  const [eventId, setEventId] = useState("");
-  const [teamId, setTeamId] = useState("");
-  const [criteriaScores, setCriteriaScores] = useState({});
-  const [message, setMessage] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [bracketFilter, setBracketFilter] = useState("All");
 
   useEffect(() => {
-    const unsubEvents = onSnapshot(collection(db, "events"), (snap) =>
-      setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-    );
     const unsubTeams = onSnapshot(collection(db, "teams"), (snap) =>
       setTeams(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+    const unsubEvents = onSnapshot(collection(db, "events"), (snap) =>
+      setEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
     const unsubScores = onSnapshot(collection(db, "scores"), (snap) =>
       setScores(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
     return () => {
-      unsubEvents();
       unsubTeams();
+      unsubEvents();
       unsubScores();
     };
   }, []);
 
-  // Admins can see/score any active event; scorers only their
-  // assigned ones — and only once the admin has flipped it Active.
-  const scoreableEvents = useMemo(() => {
-    const base = role === "admin" ? events : events.filter((ev) => assignedEvents.includes(ev.id));
-    return base
-      .filter((ev) => ev.active)
-      .slice()
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
-  }, [events, role, assignedEvents]);
+  const filteredEvents = useMemo(() => {
+    if (bracketFilter === "All") return events;
+    return events.filter((ev) => bracketOf(ev.level) === bracketFilter);
+  }, [events, bracketFilter]);
 
-  const lineup = useMemo(() => {
-    const base = role === "admin" ? events : events.filter((ev) => assignedEvents.includes(ev.id));
-    return base.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-  }, [events, role, assignedEvents]);
-
-  const selectedEvent = events.find((ev) => ev.id === eventId);
-  const criteria = selectedEvent?.criteria || [];
-
-  useEffect(() => {
-    // Reset the score inputs whenever a different event is chosen.
-    const initial = {};
-    criteria.forEach((c) => (initial[c.name] = ""));
-    setCriteriaScores(initial);
-  }, [eventId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const weightedTotal = useMemo(() => {
-    if (!criteria.length) return 0;
-    return criteria.reduce((sum, c) => {
-      const raw = Number(criteriaScores[c.name]) || 0;
-      return sum + (raw * (Number(c.weight) || 0)) / 100;
-    }, 0);
-  }, [criteria, criteriaScores]);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setMessage("");
-    if (!eventId || !teamId) {
-      setMessage("Pumili muna ng event at team.");
-      return;
-    }
-    if (criteria.some((c) => criteriaScores[c.name] === "" || criteriaScores[c.name] === undefined)) {
-      setMessage("Punan lahat ng criteria scores.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const scoreId = `${eventId}_${teamId}_${user.uid}`;
-      await setDoc(doc(db, "scores", scoreId), {
-        eventId,
-        teamId,
-        judgeId: user.uid,
-        judgeEmail: user.email,
-        criteriaScores: Object.fromEntries(
-          Object.entries(criteriaScores).map(([k, v]) => [k, Number(v)])
-        ),
-        weightedTotal,
-        timestamp: serverTimestamp(),
-      });
-      setMessage("Score submitted!");
-      setTeamId("");
-    } catch (err) {
-      setMessage("May error: " + err.message);
-    } finally {
-      setSubmitting(false);
-    }
+  // Per event+team: average the weighted scores across every judge
+  // who scored that pairing (so a team isn't penalized/boosted just
+  // because more or fewer judges scored them for one event). Falls
+  // back to legacy "points" field for any older score records.
+  const scoreFor = (eventId, teamId) => {
+    const relevant = scores.filter((s) => s.eventId === eventId && s.teamId === teamId);
+    const values = relevant.map((s) =>
+      typeof s.weightedTotal === "number" ? s.weightedTotal : Number(s.points) || 0
+    );
+    return average(values);
   };
 
-  const myScoresForEvent = (evId) => scores.filter((s) => s.eventId === evId && s.judgeId === user.uid);
+  const totals = teams
+    .map((team) => {
+      const total = filteredEvents.reduce((sum, ev) => sum + scoreFor(ev.id, team.id), 0);
+      return { ...team, total };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  const breakdown = filteredEvents.map((ev) => ({
+    ...ev,
+    perTeam: teams.map((t) => ({
+      teamName: t.name,
+      points: scoreFor(ev.id, t.id),
+    })),
+  }));
+
+  const exportCSV = () => {
+    const rows = [["Rank", "Team", "Total Score"]];
+    totals.forEach((t, idx) => rows.push([idx + 1, t.name, t.total.toFixed(2)]));
+    const csv = rows.map((r) => r.map((v) => `"${v}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `scoreboard-${bracketFilter}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const printTallySheet = () => {
+    window.print();
+  };
 
   return (
     <>
       <Navbar />
       <div className="page">
-        <h1>Judges — Input Score</h1>
+        <h1>Live Leaderboard</h1>
 
-        <div className="card">
-          <h2>Today's Lineup</h2>
-          {lineup.length === 0 ? (
-            <p>Wala pang na-assign na event sa iyo. Kontakin ang admin.</p>
-          ) : (
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Order</th>
-                    <th>Event</th>
-                    <th>Level</th>
-                    <th>Time</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lineup.map((ev) => (
-                    <tr key={ev.id} style={eventId === ev.id ? { background: "#eef2ff" } : {}}>
-                      <td>{ev.order ?? "—"}</td>
-                      <td>{ev.name}</td>
-                      <td>{bracketOf(ev.level)}</td>
-                      <td>{ev.time || "—"}</td>
-                      <td>
-                        <span className={"status-badge " + (ev.active ? "status-on" : "status-off")}>
-                          {ev.active ? "Active" : "Not yet active"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <div className="filter-row no-print">
+          {["All", ...BRACKETS].map((b) => (
+            <button
+              key={b}
+              className={"filter-chip" + (bracketFilter === b ? " active" : "")}
+              onClick={() => setBracketFilter(b)}
+              type="button"
+            >
+              {b}
+            </button>
+          ))}
         </div>
 
-        <div className="card">
-          <h2>Submit a Score</h2>
-          {scoreableEvents.length === 0 ? (
-            <p>
-              Walang aktibong event ngayon na pwede mong scorean. Maghintay hanggang i-activate ito ng
-              admin sa harapan ninyo.
-            </p>
-          ) : (
-            <form onSubmit={handleSubmit}>
-              <label>Event</label>
-              <select value={eventId} onChange={(e) => setEventId(e.target.value)}>
-                <option value="">-- Pumili ng event --</option>
-                {scoreableEvents.map((ev) => (
-                  <option key={ev.id} value={ev.id}>
-                    {ev.name} ({bracketOf(ev.level)})
-                  </option>
-                ))}
-              </select>
-
-              <label>Team</label>
-              <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
-                <option value="">-- Pumili ng team --</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-
-              {criteria.length > 0 && (
-                <div style={{ margin: "1rem 0" }}>
-                  <label>Criteria Scores (0-100 bawat isa)</label>
-                  {criteria.map((c) => (
-                    <div key={c.name} style={{ display: "flex", gap: "0.6rem", alignItems: "center", marginBottom: "0.4rem" }}>
-                      <span style={{ flex: 1 }}>
-                        {c.name} <span style={{ color: "#888" }}>({c.weight}%)</span>
-                      </span>
-                      <input
-                        style={{ flex: 1, marginBottom: 0 }}
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={criteriaScores[c.name] ?? ""}
-                        onChange={(e) =>
-                          setCriteriaScores({ ...criteriaScores, [c.name]: e.target.value })
-                        }
-                      />
-                    </div>
-                  ))}
-                  <p style={{ fontWeight: 700 }}>Weighted Total: {weightedTotal.toFixed(2)} / 100</p>
-                </div>
-              )}
-
-              <button className="primary" type="submit" disabled={submitting}>
-                {submitting ? "Submitting..." : "Submit Score"}
-              </button>
-              {message && <p style={{ marginTop: "0.8rem" }}>{message}</p>}
-            </form>
-          )}
+        <div className="no-print" style={{ display: "flex", gap: "0.6rem", marginBottom: "1rem" }}>
+          <button className="primary" onClick={exportCSV} type="button">
+            Export CSV
+          </button>
+          <button className="primary" onClick={printTallySheet} type="button">
+            Print Official Tally Sheet
+          </button>
         </div>
 
-        {eventId && (
+        <div id="tally-sheet">
+          <h2 className="print-only">
+            Official Tally Sheet — {bracketFilter === "All" ? "All Levels" : bracketFilter}
+          </h2>
+          <p className="print-only">Generated: {new Date().toLocaleString()}</p>
+
           <div className="card">
-            <h2>Aking Naisumite na sa Event na Ito</h2>
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Team</th>
-                    <th>Weighted Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {myScoresForEvent(eventId).map((s) => (
-                    <tr key={s.id}>
-                      <td>{teams.find((t) => t.id === s.teamId)?.name || s.teamId}</td>
-                      <td>{Number(s.weightedTotal).toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {totals.length === 0 ? (
+              <p>Walang teams pa. Magdagdag muna sa Admin page.</p>
+            ) : (
+              totals.map((team, idx) => (
+                <div
+                  key={team.id}
+                  className="leaderboard-row"
+                  style={{ background: team.color || "#2b50aa" }}
+                >
+                  <span className="leaderboard-rank">#{idx + 1}</span>
+                  <span className="leaderboard-name">{team.name}</span>
+                  <span className="leaderboard-points">{team.total.toFixed(2)} pts</span>
+                </div>
+              ))
+            )}
           </div>
-        )}
+
+          {breakdown.length > 0 && (
+            <div className="card">
+              <h2>Per-Event Breakdown</h2>
+              {breakdown.map((ev) => (
+                <div key={ev.id} style={{ marginBottom: "1.2rem" }}>
+                  <strong>
+                    {ev.name} <span style={{ color: "#888" }}>({bracketOf(ev.level)})</span>
+                  </strong>
+                  <table>
+                    <tbody>
+                      {ev.perTeam.map((pt, i) => (
+                        <tr key={i}>
+                          <td>{pt.teamName}</td>
+                          <td>{pt.points.toFixed(2)} pts</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="print-only" style={{ marginTop: "3rem" }}>
+            <p>Certified correct by:</p>
+            <br />
+            <br />
+            <p>_______________________________</p>
+            <p>Tabulation Committee Head</p>
+          </div>
+        </div>
       </div>
     </>
-  );
-}
-
-export default function ScorerPage() {
-  return (
-    <ProtectedRoute allowedRoles={["scorer", "admin"]}>
-      <ScorerForm />
-    </ProtectedRoute>
   );
 }
