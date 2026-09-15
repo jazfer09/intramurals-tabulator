@@ -46,7 +46,7 @@ export default function SignupPage() {
       <Navbar />
       <div className="page">
         <div className="card" style={{ maxWidth: 420, margin: "0 auto" }}>
-          <h1>Create Staff Account</h1>
+          <h1>Create Account</h1>
           <p style={{ fontSize: "0.9rem", color: "#666" }}>
             Bagong account = "viewer" muna. I-promote ka ng admin bilang
             "scorer" kapag inassign ka na sa isang event.
