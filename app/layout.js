@@ -1,5 +1,6 @@
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
+import Footer from "@/components/Footer";
 
 export const metadata = {
   title: "Intramurals Tabulator",
@@ -10,7 +11,12 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <div className="app-shell">
+            <div className="app-content">{children}</div>
+            <Footer />
+          </div>
+        </AuthProvider>
       </body>
     </html>
   );
