@@ -12,7 +12,7 @@ export default function Home() {
           </Link>
         </p>
         <p>
-          Staff/Scorer? <Link href="/login">Login here</Link>
+          Judge/Admin? <Link href="/login">Login here</Link>
         </p>
       </div>
     </div>
