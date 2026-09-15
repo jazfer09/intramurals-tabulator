@@ -4,6 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 
+const ROLE_LABELS = {
+  admin: "Admin",
+  scorer: "Judge",
+  viewer: "User",
+};
+
 export default function Navbar() {
   const { user, role, logout } = useAuth();
   const router = useRouter();
@@ -13,6 +19,8 @@ export default function Navbar() {
     router.push("/login");
   };
 
+  const roleLabel = ROLE_LABELS[role] || "User";
+
   return (
     <nav className="navbar">
       <div className="navbar-brand">
@@ -21,15 +29,18 @@ export default function Navbar() {
       <div className="navbar-links">
         <Link href="/scoreboard">Scoreboard</Link>
         {(role === "scorer" || role === "admin") && (
-          <Link href="/scorer">Input Score</Link>
+          <Link href="/scorer">Judges</Link>
         )}
         {role === "admin" && <Link href="/admin">Admin</Link>}
         {user ? (
-          <button onClick={handleLogout} className="link-button">
-            Logout ({user.email})
-          </button>
+          <>
+            <span className="role-badge">{roleLabel}</span>
+            <button onClick={handleLogout} className="link-button">
+              Logout ({user.email})
+            </button>
+          </>
         ) : (
-          <Link href="/login">Staff Login</Link>
+          <Link href="/login">Login</Link>
         )}
       </div>
     </nav>
